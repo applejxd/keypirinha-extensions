@@ -1,0 +1,22 @@
+[project]
+name = "keypirinha-sdk"
+version = "0.1.0"
+requires-python = ">=3.7"
+dependencies = [
+    "colorama",
+]
+
+[project.scripts]
+kparch = "kpsdk.cli.arch:main"
+kptmpl = "kpsdk.cli.tmpl:main"
+kpchtime = "kpsdk.cli.chtime:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"kpsdk" = ["templates/**/*"]

@@ -1,9 +1,10 @@
 [project]
 name = "keypirinha-extensions"
 version = "0.1.0"
-# for Keypirinha 2.26
-requires-python = "==3.7.*"
+# Target runtime: Keypirinha 2.26 (Python 3.7) — dev tools use whatever Python is available
+requires-python = ">=3.7"
 dependencies = [
+    "keypirinha-sdk",
     "keypirinha-stub",
 ]
 
@@ -14,7 +15,9 @@ build-backend = "uv_build.build"
 [tool.uv.workspace]
 members = [
     "_stub",
+    "_sdk",
 ]
 
 [tool.uv.sources]
 keypirinha-stub = { workspace = true }
+keypirinha-sdk = { workspace = true }
