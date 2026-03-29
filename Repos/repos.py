@@ -1,26 +1,68 @@
+# see https://keypirinha.com/api/overview.html
 # see https://keypirinha.com/api/plugin.html
 import subprocess
-import threading
 
 import keypirinha as kp
 
 
-class _BasePlugin(kp.Plugin):
+def _execute_powershell(command):
     """
-    リポジトリを開くクラスの抽象基底クラス
+    PowerShellを実行して結果を返す
+    """
+    args = ["powershell", "-ExecutionPolicy", "Bypass", "-Command", command]
+    stdout = subprocess.run(
+        args,
+        shell=True,
+        stdout=subprocess.PIPE,
+        check=True,
+    ).stdout
+    return stdout.decode("utf-8").strip()
+
+
+def _list_wsl_distros():
+    """
+    WSLディストリビューション一覧を取得する（UTF-16-LE対応）
+    """
+    stdout = subprocess.run(
+        ["wsl", "-l", "-q"],
+        shell=True,
+        stdout=subprocess.PIPE,
+        check=True,
+    ).stdout
+    return [d for d in stdout.decode("utf-16-le").strip().splitlines() if d]
+
+
+def _execute_wsl(command: str, distro = None):
+    """
+    WSLを実行して結果を返す
+    """
+    args = ["wsl"]
+    if distro:
+        args += ["-d", distro]
+    args += ["bash", "-lc", command]
+    stdout = subprocess.run(
+        args,
+        shell=True,
+        stdout=subprocess.PIPE,
+        check=True,
+    ).stdout
+    return stdout.decode("utf-8").strip()
+
+
+class ReposPlugin(kp.Plugin):
+    """
+    リポジトリを開くクラス
     """
 
+    # アイテムのカテゴリを定義（ユーザ定義のカテゴリは USER_BASE 以降を使用）
     ITEMCAT_RESULT = kp.ItemCategory.USER_BASE + 1
 
     def __init__(self):
         super().__init__()
-        # インスタンス変数として初期化（クラス変数の共有を避ける）
-        self.root_path = ""
-        self.repos = []
+        self._debug = True
 
     def on_start(self):
         """初期化"""
-        self.repos = []
         # ItemCategory に CatalogAction のリストを割り当て
         self.set_actions(
             self.ITEMCAT_RESULT,
@@ -37,377 +79,162 @@ class _BasePlugin(kp.Plugin):
         カタログ生成.
         Keypirinha で起動するためのトリガー・説明など.
         """
-        pass
+        self.set_catalog(
+            [
+                self._create_item(
+                    label="repos", short_desc="Open repositories", target="repos:"
+                )
+            ]
+        )
 
     def on_suggest(self, user_input, items_chain):
         """検索処理
 
-        Args:
-            user_input : 入力内容
-            items_chain : 選択したアイテム
+        :user_input: 入力内容
+        :items_chain: 選択したアイテム
         """
         # カテゴリが異なる場合
-        if not items_chain or items_chain[-1].category() != kp.ItemCategory.KEYWORD:
+        if not items_chain or items_chain[0].category() != kp.ItemCategory.KEYWORD:
             return
 
-        # サジェスト作成
-        suggestions = [
-            # CatalogItem オブジェクト生成
-            self.create_item(
-                category=self.ITEMCAT_RESULT,
-                label=self.repos[idx],
-                short_desc=self.repos[idx],
-                target=self.repos[idx],
-                args_hint=kp.ItemArgsHint.FORBIDDEN,
-                hit_hint=kp.ItemHitHint.IGNORE,
-            )
-            # 降順ループ
-            for idx in range(0, len(self.repos))
-        ]
+        self.dbg(
+            f"User input: {user_input}, Items chain: {[item.target() for item in items_chain]}"
+        )
+        self.dbg(f"Items chain categories: {[item.category() for item in items_chain]}")
+
+        suggestions = []
+        if items_chain[0].target() == "repos:":
+            # プラットフォーム選択
+            suggestions = [
+                self._create_item(
+                    label="Windows",
+                    short_desc="Open on Windows",
+                    target="repos:windows",
+                ),
+                self._create_item(
+                    label="WSL", short_desc="Open on WSL", target="repos:wsl"
+                ),
+            ]
+
+            if len(items_chain) > 1:
+                if items_chain[1].target() == "repos:windows":
+                    self.dbg("Selected platform: Windows")
+
+                    root_path = _execute_powershell("ghq root")
+                    repos = _execute_powershell("ghq list").split()
+                    suggestions = [
+                        self._create_item(
+                            label=repo,
+                            short_desc=repo,
+                            target=f"repos:windows:{root_path}/{repo}",
+                            is_final=True,
+                        )
+                        for repo in repos
+                    ]
+                elif items_chain[1].target() == "repos:wsl":
+                    self.dbg("Selected platform: WSL")
+
+                    # WSLのディストリビューション選択
+                    distros = _list_wsl_distros()
+                    suggestions = [
+                        self._create_item(
+                            label=distro,
+                            short_desc=distro,
+                            target=f"repos:wsl:{distro}",
+                        )
+                        for distro in distros
+                    ]
+
+                    if len(items_chain) > 2 and items_chain[2].target().startswith(
+                        "repos:wsl:"
+                    ):
+                        distro = items_chain[2].target().replace("repos:wsl:", "", 1)
+                        root_path = _execute_wsl("ghq root", distro=distro)
+                        repos = _execute_wsl("ghq list", distro=distro).split()
+                        suggestions = [
+                            self._create_item(
+                                label=repo,
+                                short_desc=f"{distro}: {repo}",
+                                target=f"repos:wsl:{distro}:{root_path}/{repo}",
+                                is_final=True,
+                            )
+                            for repo in repos
+                        ]
+                else:
+                    suggestions = [
+                        self.create_error_item(
+                            label="Unknown platform",
+                            short_desc="The selected platform is not recognized",
+                        )
+                    ]
 
         # サジェスト表示
         self.set_suggestions(
             suggestions,
-            # マッチング方式
-            kp.Match.FUZZY,
-            # ソートのルール
-            kp.Sort.NONE,
+            kp.Match.FUZZY,  # マッチング方式
+            kp.Sort.NONE,  # ソートのルール
         )
 
-    def on_execute(self, item, action):
+    def on_execute(self, catalog_item, catalog_action):
         """実行処理
 
-        Args:
-            item (CatalogItem): on_suggest で選択した項目
-            action (CatalogAction): [description]
+        :item (CatalogItem): on_suggest で選択した項目
+        :action (CatalogAction): on_suggest で選択した項目に対して実行するアクション
         """
-        # パスにスペースが含まれる場合も正しく動作するようクォートする
-        command = f'{self.open_command} "{self.root_path}/{item.target()}"'
-        subprocess.run(command, shell=True, check=True)
+        if catalog_item.category() != self.ITEMCAT_RESULT:
+            return
 
+        if not catalog_item.target().startswith("repos:"):
+            return
 
-class GhqWindows(_BasePlugin):
-    def __init__(self):
-        super().__init__()
-        self.open_command = "code"
+        # repos:platform:残り の形式で分割（pathに:が含まれる場合を考慮）
+        parts = catalog_item.target().split(":", 2)
+        if len(parts) < 3:
+            self.err(f"Invalid target format (too few parts): {catalog_item.target()}")
+            return
 
-    def on_start(self):
-        """初期化"""
-        super().on_start()
-        self.root_path = (
-            subprocess.run(
-                "powershell -ExecutionPolicy Bypass ghq root",
-                shell=True,
-                stdout=subprocess.PIPE,
-                check=True,
-            )
-            .stdout.decode("utf-8")
-            .strip()
-        )
-        # バイナリ文字列を変換・改行コードでリスト化
-        self.repos = (
-            subprocess.run(
-                "powershell -ExecutionPolicy Bypass ghq list",
-                shell=True,
-                stdout=subprocess.PIPE,
-                check=True,
-            )
-            .stdout.decode("utf-8")
-            .split()
-        )
-
-    def on_catalog(self):
-        """
-        カタログ生成.
-        Keypirinha で起動するためのトリガー・説明など.
-        """
-        # CatalogItem のリストで catalog の変更
-        self.set_catalog(
-            [
-                # CatalogItem 生成
-                self.create_item(
-                    # 入力のカテゴリ
-                    category=kp.ItemCategory.KEYWORD,
-                    # 表示名
-                    label="repos (ghq for Windows)",
-                    # 説明
-                    short_desc="Open repositories",
-                    # 起動キーワード
-                    target="repos_win",
-                    # 引数を要求する
-                    args_hint=kp.ItemArgsHint.REQUIRED,
-                    # 重複なしで履歴を保存
-                    hit_hint=kp.ItemHitHint.NOARGS,
-                )
-            ]
-        )
-
-
-class SrcWindows(_BasePlugin):
-    def __init__(self):
-        super().__init__()
-        self.open_command = "code"
-
-    def on_start(self):
-        """初期化"""
-        super().on_start()
-        self.root_path = (
-            subprocess.run(
-                "powershell -ExecutionPolicy Bypass $env:UserProfile",
-                shell=True,
-                stdout=subprocess.PIPE,
-                check=True,
-            )
-            .stdout.decode("utf-8")
-            .strip()
-            + "\\src"
-        )
-        # バイナリ文字列を変換・改行コードでリスト化
-        self.repos = (
-            subprocess.run(
-                "powershell -ExecutionPolicy Bypass Get-ChildItem $env:UserProfile\\src -Name",
-                shell=True,
-                stdout=subprocess.PIPE,
-                check=True,
-            )
-            .stdout.decode("utf-8")
-            .split()
-        )
-
-    def on_catalog(self):
-        """
-        カタログ生成.
-        Keypirinha で起動するためのトリガー・説明など.
-        """
-        # CatalogItem のリストで catalog の変更
-        self.set_catalog(
-            [
-                # CatalogItem 生成
-                self.create_item(
-                    # 入力のカテゴリ
-                    category=kp.ItemCategory.KEYWORD,
-                    # 表示名
-                    label="repos (src folder in Windows)",
-                    # 説明
-                    short_desc="Open repositories",
-                    # 起動キーワード
-                    target="repos_src_win",
-                    # 引数を要求する
-                    args_hint=kp.ItemArgsHint.REQUIRED,
-                    # 重複なしで履歴を保存
-                    hit_hint=kp.ItemHitHint.NOARGS,
-                )
-            ]
-        )
-
-
-class GhqWsl(_BasePlugin):
-    CMD_ROOT = "repos_ghq"
-    CMD_DISTRO = "repos_ghq:distro:"
-    CMD_REPO = "repos_ghq:repo:"
-
-    def __init__(self):
-        super().__init__()
-
-        self.open_command = "wsl code"
-        self.distros = []
-        self.roots_by_distro = {}
-        self.repos_by_distro = {}
-        self._cache_lock = threading.Lock()
-        self._cache_warm_started = False
-
-    def on_start(self):
-        """初期化"""
-        super().on_start()
-        self.distros = []
-        self.roots_by_distro = {}
-        self.repos_by_distro = {}
-        self._cache_warm_started = False
-        self._warm_cache_async()
-
-    def _run_wsl(self, args):
-        completed = subprocess.run(
-            ["wsl", *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True,
-        )
-        return completed.stdout.strip()
-
-    def _list_distros(self):
-        return self._run_wsl(["-l", "-q"]).split()
-
-    def _ensure_distros_loaded(self):
-        if self.distros:
-            return self.distros
-
-        with self._cache_lock:
-            if not self.distros:
-                self.distros = self._list_distros()
-        return self.distros
-
-    def _load_distro_repos(self, distro):
-        with self._cache_lock:
-            if distro not in self.roots_by_distro:
-                self.roots_by_distro[distro] = self._run_wsl(
-                    ["-d", distro, "bash", "-lc", "ghq root"]
-                )
-
-            if distro not in self.repos_by_distro:
-                # ghq は login shell の PATH に載るため -l が必要
-                self.repos_by_distro[distro] = self._run_wsl(
-                    ["-d", distro, "bash", "-lc", "ghq list"]
-                ).split()
-        return self.roots_by_distro[distro], self.repos_by_distro[distro]
-
-    def _warm_cache(self):
+        platform = parts[1]
+        rest = parts[2]
         try:
-            for distro in self._ensure_distros_loaded():
-                self._load_distro_repos(distro)
-        except (FileNotFoundError, subprocess.CalledProcessError):
+            if platform == "windows":
+                # 形式: repos:windows:C:/path
+                repo_path = rest
+                command = f'code "{repo_path}"'
+            elif platform == "wsl":
+                # 形式: repos:wsl:distro:path (distroに:は含まれない)
+                wsl_parts = rest.split(":", 1)
+                if len(wsl_parts) < 2:
+                    self.err(f"Invalid WSL target format: {catalog_item.target()}")
+                    return
+                distro = wsl_parts[0]
+                repo_path = wsl_parts[1]
+                command = f'code --remote wsl+{distro} "{repo_path}"'
+            else:
+                self.err(f"Unknown platform: {platform}")
+                return
+        except Exception as e:
+            self.err(f"Error preparing command: {e}")
             return
 
-    def _warm_cache_async(self):
-        if self._cache_warm_started:
-            return
-
-        self._cache_warm_started = True
-        threading.Thread(target=self._warm_cache, daemon=True).start()
-
-    def _suggest_distros(self):
+        self.dbg(f"Running command: {command}")
         try:
-            distros = self._ensure_distros_loaded()
-        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-            self.set_suggestions(
-                [
-                    self.create_error_item(
-                        label="Failed to load WSL distributions",
-                        short_desc=str(exc),
-                    )
-                ],
-                kp.Match.ANY,
-                kp.Sort.NONE,
-            )
-            return
+            subprocess.run(command, shell=True, check=True)
+        except subprocess.CalledProcessError as e:
+            self.err(f"Command failed with exit code {e.returncode}: {e}")
 
-        suggestions = [
-            self.create_item(
-                category=kp.ItemCategory.KEYWORD,
-                label=distro,
-                short_desc=f"Browse ghq repositories in {distro}",
-                target=f"{self.CMD_DISTRO}{distro}",
-                args_hint=kp.ItemArgsHint.REQUIRED,
-                hit_hint=kp.ItemHitHint.KEEPALL,
-            )
-            for distro in distros
-        ]
-        self.set_suggestions(suggestions, kp.Match.FUZZY, kp.Sort.NONE)
-
-    def _suggest_repos(self, distro, user_input):
-        try:
-            root_path, repos = self._load_distro_repos(distro)
-        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-            self.set_suggestions(
-                [
-                    self.create_error_item(
-                        label=f"{distro}: failed to load ghq repositories",
-                        short_desc=str(exc),
-                    )
-                ],
-                kp.Match.ANY,
-                kp.Sort.NONE,
-            )
-            return
-
-        if user_input:
-            query = user_input.lower()
-            repos = [repo for repo in repos if query in repo.lower()]
-
-        if not repos:
-            self.set_suggestions(
-                [
-                    self.create_error_item(
-                        label=f"{distro}: no repositories found",
-                        short_desc="ghq list returned no repositories",
-                    )
-                ],
-                kp.Match.ANY,
-                kp.Sort.NONE,
-            )
-            return
-
-        suggestions = [
-            self.create_item(
-                category=self.ITEMCAT_RESULT,
-                label=repo,
-                short_desc=f"{distro}: {repo}",
-                target=f"{self.CMD_REPO}{distro}\t{root_path}\t{repo}",
-                args_hint=kp.ItemArgsHint.FORBIDDEN,
-                hit_hint=kp.ItemHitHint.IGNORE,
-            )
-            for repo in repos
-        ]
-        self.set_suggestions(suggestions, kp.Match.FUZZY, kp.Sort.NONE)
-
-    def on_suggest(self, user_input, items_chain):
-        if not items_chain or items_chain[0].category() != kp.ItemCategory.KEYWORD:
-            return
-
-        if items_chain[0].target() != self.CMD_ROOT:
-            return
-
-        if len(items_chain) == 1:
-            self._suggest_distros()
-            return
-
-        if len(items_chain) >= 2 and items_chain[1].target().startswith(self.CMD_DISTRO):
-            distro = items_chain[1].target().replace(self.CMD_DISTRO, "", 1)
-            self._suggest_repos(distro, user_input.strip())
-            return
-
-        if (
-            items_chain[-1].category() == kp.ItemCategory.KEYWORD
-            and items_chain[-1].target() in self.distros
-        ):
-            self._suggest_repos(items_chain[-1].target(), user_input.strip())
-            return
-
-    def on_execute(self, item, action):
-        if item.category() != self.ITEMCAT_RESULT:
-            return
-
-        if not item.target().startswith(self.CMD_REPO):
-            return
-
-        distro, root_path, repo = item.target().replace(self.CMD_REPO, "", 1).split(
-            "\t", 2
-        )
-        command = f'wsl -d "{distro}" code "{root_path}/{repo}"'
-        subprocess.run(command, shell=True, check=True)
-
-    def on_catalog(self):
+    def _create_item(
+        self, label: str, short_desc: str, target: str, is_final: bool = False
+    ):
         """
-        カタログ生成.
-        Keypirinha で起動するためのトリガー・説明など.
+        CatalogItem を生成する関数
         """
-        # CatalogItem のリストで catalog の変更
-        self.set_catalog(
-            [
-                # CatalogItem 生成
-                self.create_item(
-                    # 入力のカテゴリ
-                    category=kp.ItemCategory.KEYWORD,
-                    # 表示名
-                    label="repos (ghq for WSL)",
-                    # 説明
-                    short_desc="Open repositories",
-                    # 起動キーワード
-                    target=self.CMD_ROOT,
-                    # 引数を要求する
-                    args_hint=kp.ItemArgsHint.REQUIRED,
-                    # 重複なしで履歴を保存
-                    hit_hint=kp.ItemHitHint.KEEPALL,
-                )
-            ]
+        return self.create_item(
+            # 入力のカテゴリ
+            category=kp.ItemCategory.KEYWORD if not is_final else self.ITEMCAT_RESULT,
+            label=label,  # 表示名
+            short_desc=short_desc,  # 説明
+            target=target,  # 起動キーワード
+            # 引数を要求する
+            args_hint=kp.ItemArgsHint.REQUIRED if not is_final else kp.ItemArgsHint.FORBIDDEN,  
+            hit_hint=kp.ItemHitHint.NOARGS if not is_final else kp.ItemHitHint.IGNORE,
         )

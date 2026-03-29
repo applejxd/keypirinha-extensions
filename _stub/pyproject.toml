@@ -2,7 +2,7 @@
 name = "keypirinha-stub"
 version = "0.1.0"
 description = "Stub package for Keypirinha extensions"
-requires-python = "==3.7.*"
+requires-python = ">=3.7"
 dependencies = ["setuptools"]
 
 [build-system]
