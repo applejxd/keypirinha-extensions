@@ -1,0 +1,20 @@
+[project]
+name = "keypirinha-extensions"
+version = "0.1.0"
+# for Keypirinha 2.26
+requires-python = "==3.7.*"
+dependencies = [
+    "keypirinha-stub",
+]
+
+[tool.uv.build-backend]
+requires = ["uv-build"]
+build-backend = "uv_build.build"
+
+[tool.uv.workspace]
+members = [
+    "_stub",
+]
+
+[tool.uv.sources]
+keypirinha-stub = { workspace = true }

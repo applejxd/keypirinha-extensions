@@ -1,0 +1,27 @@
+[project]
+name = "keypirinha-stub"
+version = "0.1.0"
+description = "Stub package for Keypirinha extensions"
+requires-python = "==3.7.*"
+dependencies = ["setuptools"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = [
+    "filefilter",
+    "globex",
+    "keypirinha",
+    "keypirinha_api",
+    "keypirinha_net",
+    "keypirinha_util",
+    "keypirinha_wintypes",
+    "socks",
+    "sockshandler"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
